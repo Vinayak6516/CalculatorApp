@@ -1,0 +1,122 @@
+name: Android CI/CD
+
+on:
+  push:
+    branches:
+      - dev
+      - test
+      - main
+  pull_request:
+    branches:
+      - dev
+      - test
+
+jobs:
+  build_test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [dev, test, prod]
+        include:
+          - environment: dev
+            branch: dev
+          - environment: test
+            branch: test
+          - environment: prod
+            branch: main
+    if: github.ref == format('refs/heads/{0}', matrix.branch)
+    environment:
+      name: ${{ matrix.environment }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/gradle-build-action@v2
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Unit Tests
+        if: ${{ matrix.environment == 'test' }}
+        run: ./gradlew testDebugUnitTest
+
+      - name: Connected Tests (Emulator)
+        if: ${{ matrix.environment == 'test' }}
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          profile: pixel_6
+          avd-name: testEmulator
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window
+          disable-animations: true
+          working-directory: ./app
+          command: ./gradlew connectedDebugAndroidTest
+
+      - name: Build Debug APK (Dev/Test)
+        if: ${{ matrix.environment == 'dev' || matrix.environment == 'test' }}
+        run: ./gradlew assembleDebug
+
+      - name: Build Release AAB (Prod)
+        if: ${{ matrix.environment == 'prod' }}
+        run: ./gradlew bundleRelease
+        env:
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+
+      - name: Decode and save keystore
+        if: ${{ matrix.environment == 'prod' }}
+        run: echo "${{ secrets.SIGNING_KEYSTORE_BASE64 }}" | base64 -d > app/keystore.jks
+
+      - name: Upload Debug APK (Dev/Test)
+        if: ${{ matrix.environment == 'dev' || matrix.environment == 'test' }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload Release AAB (Prod)
+        if: ${{ matrix.environment == 'prod' }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-aab
+          path: app/build/outputs/bundle/release/app-release.aab
+
+  deploy_playstore:
+    needs: build_test
+    runs-on: ubuntu-latest
+    environment:
+      name: prod
+    if: github.ref == 'refs/heads/main' && needs.build_test.result == 'success'
+    steps:
+      - name: Download Release AAB
+        uses: actions/download-artifact@v3
+        with:
+          name: release-aab
+          path: release
+
+      - name: Manual Approval
+        uses: peter-evans/ask-for-approval@v5
+        with:
+          approvers: 'your-github-username' # Replace with your GitHub username
+          minimum-approvals: 1
+          title: 'Approve Play Store Deployment'
+          description: 'Please review and approve the release AAB for Play Store deployment.'
+
+      - name: Deploy to Play Store
+        uses: r0adkll/upload-google-play@v1
+        with:
+          service_account_json_base64: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON_BASE64 }}
+          package_name: your.package.name # Replace with your package name
+          release_files: release/app-release.aab
+          track: production
+          status: completed

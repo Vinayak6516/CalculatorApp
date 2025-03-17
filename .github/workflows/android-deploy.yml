@@ -24,7 +24,7 @@ jobs:
             branch: test
           - environment: prod
             branch: master
-    if: github.ref == format('refs/heads/{0}', matrix.branch)
+    # if: github.ref == format('refs/heads/{0}', matrix.branch)
     environment:
       name: ${{ matrix.environment }}
     steps:
